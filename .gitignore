@@ -10,3 +10,5 @@ data/processed/
 .DS_Store
 context.md
 .claude/
+.chrome-profile/
+.streamlit/
