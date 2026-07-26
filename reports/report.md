@@ -172,13 +172,45 @@ are worth stating plainly rather than glossing over:
   z-score give it a real signature the classifier can use, distinct from both
   `lateral_movement` (fast breadth) and `insider_drift` (normal-hours
   breadth).
-- **`device_spoofing` and `lateral_movement` got noticeably worse**
-  (device_spoofing precision dropped from 0.70 to 0.20). Adding an 8th class
-  to a fixed-capacity random forest (`max_depth=10`) means every class
-  competes for the same decision boundary, and the two classes with the
-  weakest existing signal absorbed the cost. This is a real tradeoff of
-  extending the taxonomy without also giving the model more room, not a
-  regression to paper over.
+- **`device_spoofing` got noticeably worse** (precision dropped from 0.70 to
+  0.20) and **`lateral_movement` softened too** (0.50 to 0.45). The first
+  guess was that a fixed-capacity forest (`max_depth=10`) was running out of
+  room to separate an 8th class - we tested that directly (see below) and it
+  was wrong. The real cause: 26.8% of `insider_drift` test sessions and 10% of
+  `low_and_slow_exfil` sessions get misclassified as `device_spoofing` -
+  almost none of the confusion comes from the other attacker classes.
+  `device_spoofing`'s only strong signal is a binary fingerprint mismatch, and
+  with two more "gradual, ambiguous" classes now in the mix, the forest is
+  using it as a soft catch-all for sessions with weak, overlapping novelty
+  signals rather than a genuine fingerprint change. This is a real cost of
+  extending the taxonomy, but a different one than originally assumed.
+
+### Did more model capacity fix it?
+
+Tested directly rather than assumed: retrained the tabular classifier alone
+(reusing the already-trained baseline and GRU) at `max_depth` 10/15/20/None
+and `n_estimators` 300/500, six configs in total, and re-scored the same test
+split.
+
+| Config | device_spoofing precision | lateral_movement precision | insider_drift precision | accuracy |
+|---|---|---|---|---|
+| depth=10, n=300 (shipped) | 0.196 | 0.451 | 0.077 | 0.939 |
+| depth=15, n=300 | 0.200 | 0.549 | 0.091 | 0.949 |
+| depth=20, n=300 | 0.205 | 0.557 | 0.117 | 0.959 |
+| depth=None, n=300 | 0.205 | 0.549 | 0.165 | 0.970 |
+| depth=15, n=500 | 0.200 | 0.549 | 0.091 | 0.950 |
+| depth=20, n=500 | 0.204 | 0.570 | 0.115 | 0.959 |
+
+`device_spoofing` doesn't move - 0.196 to at most 0.205, effectively flat
+across a 6x range of capacity. Capacity was not the bottleneck, which rules
+out the original guess. Interestingly, capacity *does* help elsewhere -
+`lateral_movement` gains 10-12 precision points and `insider_drift` roughly
+doubles - with no other class made worse. That's a real, free improvement
+sitting on the table, but it doesn't solve the problem this experiment was
+run to check, so the shipped model keeps `max_depth=10, n_estimators=300`
+rather than changing capacity for a reason unrelated to why the test was run.
+Fixing `device_spoofing` for real would mean giving it a feature that isn't
+shared with the two gradual classes - not tuning the forest around it.
 
 ### What the alert budget actually buys
 
@@ -222,9 +254,10 @@ tells the more honest story:
 - **Device spoofing and lateral movement** are the weakest genuine attacks -
   both require the model to recognize "never seen before" patterns from a
   single or a few sessions, and precision is now quite low (0.20 and 0.45)
-  even though recall stays high, meaning the model over-flags a lot of normal
-  sessions as these types. Adding the 8th class made this worse, per the note
-  above the per-class table.
+  even though recall stays high. For device_spoofing specifically, the
+  over-flagging is concentrated on `insider_drift` and `low_and_slow_exfil`
+  sessions rather than normal traffic in general - see the capacity
+  experiment above for what was tried and why it's not a capacity problem.
 - **Insider drift** is the class the brief calls out as ambiguous, and the
   numbers show it: 0.077 precision means the model tags a lot of ordinary
   resource-footprint growth as drift. That's the expected failure mode for an
@@ -374,11 +407,18 @@ Its limitations are worth being blunt about:
 - Isolation forest contamination and GRU class weights are fixed constants,
   not tuned per deployment; a real system would want these calibrated against
   an analyst's actual alert budget.
-- The random forest's `max_depth=10` is fixed regardless of how many classes
-  it's asked to separate. Going from 7 to 8 classes measurably hurt the
-  weakest two (device_spoofing, lateral_movement) - adding a real attack
-  pattern to the taxonomy is not free, and this project doesn't re-tune model
-  capacity when the label set grows.
+- `device_spoofing` precision is low (0.20) because the forest uses it as a
+  soft catch-all for `insider_drift` and `low_and_slow_exfil` sessions with
+  weak, overlapping novelty signals - not because of model capacity, which
+  was tested directly (`max_depth` up to unbounded, `n_estimators` up to 500)
+  and left it unmoved. Fixing this needs a feature that separates a genuine
+  fingerprint change from "some other gradual novelty," which doesn't
+  currently exist.
+- Random forest capacity (`max_depth=10, n_estimators=300`) is a fixed
+  constant not re-tuned when the label set grows. The capacity sweep above
+  showed real, cost-free gains elsewhere (lateral_movement, insider_drift)
+  that this project left on the table because they weren't the problem being
+  tested - a real deployment would likely want to pick them up.
 - The narrative layer's display thresholds (when a feature is "worth
   mentioning") are hand-set constants. They stop nonsense phrasing but were
   chosen by inspection, not derived from the data.
