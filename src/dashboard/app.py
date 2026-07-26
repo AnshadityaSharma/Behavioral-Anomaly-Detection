@@ -211,12 +211,21 @@ def system_behavior_tab(demo):
         )
 
 
-def feedback_tab(decisions, adjustments):
+def feedback_tab(decisions, scored):
     st.markdown(
         "Dismissals push an entity down the queue and confirmations pull it up, by "
-        f"{feedback.DISMISS_STEP:.2f} per decision, capped at "
-        f"{feedback.MAX_STEPS * feedback.DISMISS_STEP:.2f}. This only reorders the queue - "
-        "it does not retrain the models or change any stored risk score."
+        f"{feedback.PERCENTILE_STEP:.2f} percentile ranks per decision, capped at "
+        f"**{feedback.PERCENTILE_CAP:.2f} percentile ranks** however many decisions "
+        "are recorded. Because the top-1% queue spans exactly one percentile point, "
+        f"that cap means an entity can be moved through at most "
+        f"{feedback.PERCENTILE_CAP * 100:.0f}% of the queue. This only reorders the "
+        "queue - it does not retrain the models or change any stored risk score."
+    )
+    st.caption(
+        "The earlier version capped the raw score offset at "
+        f"+/-{feedback.MAX_STEPS * feedback.DISMISS_STEP:.2f} instead. That bounded "
+        "far less than it looked like: scores cluster tightly just above the cutoff, "
+        "so 0.10 of score was wider than the cutoff margin for 96% of queued entities."
     )
 
     if decisions.empty:
@@ -231,11 +240,23 @@ def feedback_tab(decisions, adjustments):
             use_container_width=True, height=280, hide_index=True,
         )
     with c2:
-        st.markdown("**Current per-entity offsets**")
+        st.markdown("**Current per-entity movement**")
+        steps = feedback.entity_net_steps(decisions)
+        moved = (
+            scored[scored["entity_id"].isin(steps)]
+            .groupby("entity_id")["pct_movement"].max()
+            .to_dict()
+        )
         st.dataframe(
-            pd.DataFrame(
-                [{"entity_id": k, "offset": round(v, 3)} for k, v in adjustments.items()]
-            ).sort_values("offset"),
+            pd.DataFrame([
+                {
+                    "entity_id": eid,
+                    "net decisions": net,
+                    "percentile movement": round(moved.get(eid, 0.0), 3),
+                    "at cap": abs(moved.get(eid, 0.0)) >= feedback.PERCENTILE_CAP - 1e-9,
+                }
+                for eid, net in steps.items()
+            ]).sort_values("percentile movement"),
             use_container_width=True, height=280, hide_index=True,
         )
 
@@ -245,8 +266,7 @@ def main():
 
     scored, metrics = load_data()
     decisions = feedback.load_decisions()
-    adjustments = feedback.entity_adjustments(decisions)
-    scored = feedback.apply_adjustments(scored, adjustments)
+    scored = feedback.apply_feedback(scored, decisions)
 
     top_level_metrics(scored, metrics, decisions)
     st.divider()
@@ -259,7 +279,7 @@ def main():
     with behavior_tab:
         system_behavior_tab(load_demo_summary())
     with review_tab:
-        feedback_tab(decisions, adjustments)
+        feedback_tab(decisions, scored)
 
 
 if __name__ == "__main__":

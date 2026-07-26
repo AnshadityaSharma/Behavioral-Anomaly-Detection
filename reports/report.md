@@ -440,30 +440,29 @@ strictly faithful only to the forest's view.
 ## 8. Analyst feedback loop
 
 The dashboard records confirm/dismiss decisions per alert into a local SQLite
-file and converts them into a per-entity score offset: **-0.02 per dismissal,
-+0.02 per confirmation, capped at ±0.10**. `effective_risk = risk_score +
-offset`, clipped to [0,1], and the queue ranks on that.
+file and converts them into a per-entity adjustment applied only to queue
+ranking. This is deliberately not learning and should not be described as such:
+it does not retrain anything, does not modify stored risk scores, does not
+generalise from one entity to another, and never forgets. It is a manual
+re-ranking knob with an audit trail.
 
-This is deliberately not learning and should not be described as such. It does
-not retrain anything, does not modify stored risk scores, does not generalise
-from one entity to another, and never forgets. It is a manual re-ranking knob
-with an audit trail.
+Two capping modes exist in `src/dashboard/feedback.py`. The original capped the
+raw score offset; the current default caps movement in percentile rank. Both
+are kept so the comparison below runs on the same data.
 
-Measured on the current run: dismissing five alerts from the entity with the
-largest queue footprint (`dev_0025` - 54 alerts in the top-1% queue, 55
-genuine brute-force sessions in its history) moves its best rank from **12 to
-937** and cuts its top-1% presence from **54 alerts to 40**. It is not fully
-removed because its attack sessions average 0.975 risk, comfortably more than
-0.10 above the cutoff.
+All numbers in this section hold the alert cutoff fixed at its original value
+(0.886) rather than recomputing it after adjustment, so they isolate an
+entity's own movement rather than mixing in a shift of the whole distribution.
 
-### 8.1 The cap does far less than it appears to
+### 8.1 The original score cap bounded almost nothing
 
-`dev_0025` surviving five dismissals is not the typical case - it is close to
-the only case. Across the 213 entities with at least one alert in the top-1%
-queue, the margin between an entity's highest-scoring alert and the queue
-cutoff distributes like this:
+The first design was **-0.02 per dismissal, +0.02 per confirmation, capped at
+±0.10** of raw risk score. That cap turned out to be nearly decorative. Across
+the 213 entities with at least one alert in the top-1% queue, the margin
+between an entity's highest-scoring alert and the queue cutoff distributes
+like this:
 
-| Margin above cutoff | Value |
+| Margin above cutoff (score) | Value |
 |---|---|
 | median | 0.030 |
 | mean | 0.033 |
@@ -471,28 +470,127 @@ cutoff distributes like this:
 | maximum | 0.114 |
 
 The ±0.10 cap is **larger than the margin for 204 of 213 entities (95.8%)**.
-Only nine entities in the entire queue score high enough to survive five
-dismissals. Put plainly: a single analyst clicking "dismiss" five times can
-remove essentially any entity they choose from the alert queue entirely, and
-the cap that was supposed to bound that damage is bounding almost nothing,
-because risk scores cluster tightly just above the cutoff rather than spreading
-out above it.
+Only nine entities score high enough to survive five dismissals. At session
+level, 1,002 of the 1,131 queued alerts (88.6%) could be pushed below the
+cutoff, including 798 genuine attack sessions (70.6%).
 
-This is an insider-threat surface, not just a usability quirk. An analyst who
-is themselves the threat - or whose account is compromised - can suppress
-detection of their own activity through the intended UI, leaving an audit
-trail that looks like ordinary triage. The system logs *that* a dismissal
-happened, which is the one thing working in its favour, but nothing flags the
-pattern of one analyst repeatedly dismissing alerts on one entity, and nothing
-detects that a dismissal contradicted a known label.
+The root cause is that a fixed *score* offset does not correspond to a fixed
+amount of *queue movement*. Risk scores cluster tightly just above the cutoff
+instead of spreading out above it, so 0.10 of score spans most of the queue.
+The cap's value had no interpretable relationship to what it was supposed to
+bound - nobody chose "88.6% of the queue", it just fell out of the score
+distribution.
 
-Mitigations that would actually help, none implemented: scale the cap to the
-local score density rather than fixing it at 0.10; require a second analyst to
-confirm dismissals on entities above some risk floor; decay offsets over time
-so suppression is not permanent; and alert on the meta-pattern of concentrated
-dismissals by a single user.
+This is an insider-threat surface, not a usability quirk. An analyst who is
+themselves the threat, or whose account is compromised, could suppress
+detection of their own activity through the intended UI, leaving an audit trail
+that looks like ordinary triage.
 
-### 8.2 Other limits of the loop
+### 8.2 Replacing it with a percentile-rank cap
+
+The fix caps how far an entity can move in **percentile rank** rather than in
+score. Requested movement is `net_decisions * 0.05` percentile points, clipped
+to ±`PERCENTILE_CAP` however many decisions were recorded, then mapped back
+through the empirical score distribution so the queue can still rank on a
+score. Per-decision step times max steps still equals the cap (0.05 × 5 =
+0.25), so "five decisions maxes it out" is preserved - only the ceiling
+changes units.
+
+**Why this unit is the right one.** The top-1% queue spans one percentile
+point (99.0002 to 100.0000). A cap of N percentile points therefore
+means precisely "an entity can be moved through N% of the queue", independent
+of how tightly scores happen to cluster. The measured relationship is exactly
+linear, which is the property the score cap lacked:
+
+| Percentile cap | Entities fully removable | Queue sessions removable |
+|---|---|---|
+| 0.05 | 6 / 213 (2.8%) | 57 / 1,131 (5.0%) |
+| 0.10 | 16 / 213 (7.5%) | 114 / 1,131 (10.1%) |
+| 0.15 | 31 / 213 (14.6%) | 170 / 1,131 (15.0%) |
+| 0.20 | 42 / 213 (19.7%) | 227 / 1,131 (20.1%) |
+| **0.25 (shipped)** | **60 / 213 (28.2%)** | **283 / 1,131 (25.1%)** |
+| 0.30 | 74 / 213 (34.7%) | 340 / 1,131 (30.1%) |
+| 0.50 | 153 / 213 (71.8%) | 566 / 1,131 (50.0%) |
+| 1.00 | 213 / 213 (100%) | 1,131 / 1,131 (100%) |
+
+**Justifying N = 0.25.** The original ±0.10 was justified only as "five
+dismissals × 0.02", a number with no operational meaning. N is justified
+against the tradeoff curve above. N ≥ 1.0 is equivalent to no cap at all, since
+the queue is one percentile point deep. N = 0.50 still leaves 72% of entities
+removable, barely better than before. N = 0.10 is tighter but lets an analyst
+move an entity only 10% of the way down the queue, which is thin for genuine
+triage. N = 0.25 keeps a quarter of the queue's depth available for legitimate
+correction (~282 positions in the full log) while cutting entity
+exploitability from 95.8% to 28.2%. That is a policy choice on a smooth
+continuum rather than a discovered optimum - but it is now a *legible* choice,
+which the previous parameter was not.
+
+### 8.3 Before and after, measured
+
+| Measure | Score cap ±0.10 | Percentile cap 0.25 |
+|---|---|---|
+| Entities fully removable from queue | 204 / 213 (95.8%) | **60 / 213 (28.2%)** |
+| Queue sessions pushable below cutoff | 1,002 / 1,131 (88.6%) | **283 / 1,131 (25.1%)** |
+| Genuine attack sessions suppressible | 798 / 1,131 (70.6%) | **87 / 1,131 (7.7%)** |
+
+The set of entities still exploitable under the new cap is a strict subset of
+those exploitable under the old one - nothing became newly vulnerable.
+
+**The `dev_0025` insider-threat case, re-run.** This is the entity with the
+largest queue footprint: 54 alerts in the top-1% queue and 55 genuine
+brute-force sessions in its history.
+
+| | Best rank after 5 dismissals | Queue alerts remaining |
+|---|---|---|
+| No dismissals | 12 | 54 / 54 |
+| Score cap ±0.10 | 937 | 37 / 54 |
+| Percentile cap 0.25 | 248 | **54 / 54** |
+
+Under the new cap it is properly bounded: all 54 of its alerts stay in the
+queue, where the old cap silently removed 17 of them. Note the rank still moves
+a long way (12 → 248) - the entity is deprioritised, which is what an analyst
+dismissing it should achieve, but it cannot be made to disappear.
+
+(The previous version of this report quoted "54 alerts to 40" for the old cap.
+That figure recomputed the 1% cutoff on the adjusted distribution; holding the
+cutoff fixed, as everything here does, the correct figure is 37.)
+
+### 8.4 What this does not fix
+
+**60 entities are still fully removable, and they are the wrong 60.** Every one
+of them is a genuine attacker, and they are almost entirely low-footprint: of
+the 60, most have one or two alerts in the queue. The residual surface is
+concentrated on entities whose attack is *small* - predominantly
+credential_stuffing, plus device_spoofing, lateral_movement, low_and_slow_exfil
+and impossible_travel cases with a single qualifying session.
+
+That is arguably backwards from what you want. The percentile cap protects
+high-volume, high-scoring attackers well - precisely the ones an analyst is
+least likely to miss anyway - and protects the quiet ones worst. A patient
+attacker who keeps their footprint to one or two sessions is still fully
+suppressible by five clicks. The change reduces the insider-threat surface by
+roughly 9x in genuine-attack terms (798 → 87 sessions), which is a real
+improvement, but it does not close it, and what remains is skewed toward
+subtle attacks rather than obvious ones.
+
+**Legitimate correction is now more limited too, and this is a real cost.**
+144 entities that an analyst could previously clear out of the queue entirely
+can no longer be cleared. For a genuinely noisy high-scoring entity - a
+misconfigured scanner that trips brute-force detection every day - the analyst
+can now only push it 25% down the queue and must keep seeing it. 848 of 1,131
+queued sessions can still be moved down but not out. Whether that trade is
+correct depends on how much you trust the analyst, which is exactly the
+question the cap exists to avoid having to answer.
+
+**Everything else about the loop is unchanged.** The cap bounds how far one
+entity can move; it does nothing about *who* is moving it. Still not
+implemented: flagging the meta-pattern of one analyst repeatedly dismissing
+alerts on one entity, requiring a second reviewer above some risk floor,
+decaying offsets over time, or detecting that a dismissal contradicted a known
+label. The percentile cap makes the blast radius of a single malicious analyst
+smaller and predictable; it does not detect one.
+
+### 8.5 Other limits of the loop
 
 - **It starts empty.** With zero decisions every offset is zero, so the loop
   contributes nothing on day one and only becomes useful after an analyst has
@@ -556,11 +654,20 @@ Consolidated; the sections above give the evidence for each.
 
 **Feedback loop**
 
-- The ±0.10 cap exceeds the cutoff margin for 95.8% of queue entities, so it
-  bounds far less than it appears to and leaves an insider-threat surface
-  (§8.1).
-- Offsets are per-entity, never expire, and nothing detects a dismissal that
-  contradicts a known label.
+- The abuse cap is now expressed in percentile rank (0.25 points = 25% of the
+  queue) rather than raw score, which cut entity exploitability from 95.8% to
+  28.2% and genuine-attack suppressibility from 70.6% to 7.7% (§8.3). It is a
+  reduction, not a fix.
+- The residual surface is skewed toward *quiet* attackers: all 60 still-
+  removable entities are genuine attacks, and most have only one or two alerts
+  in the queue (§8.4). A patient attacker with a small footprint remains fully
+  suppressible by five clicks.
+- The new cap also constrains legitimate use - 144 entities that an analyst
+  could previously clear out of the queue no longer can (§8.4).
+- The cap bounds blast radius but detects nothing: no flagging of one analyst
+  repeatedly dismissing one entity, no second-reviewer requirement, no offset
+  decay, and no detection of a dismissal that contradicts a known label.
+- Offsets remain per-entity and never expire.
 
 ## 10. Scalability and real-time feasibility
 
