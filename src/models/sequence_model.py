@@ -18,9 +18,16 @@ def build_sequences(features_df, window=WINDOW):
     targets = []
     session_ids = []
 
+    # labels are training-only; at inference they are hidden, so the returned
+    # targets are placeholders in that case.
+    has_labels = "label" in df.columns
+
     for entity_id, group in df.groupby("entity_id", sort=False):
         feats = group[FEATURE_COLUMNS].values.astype(np.float32)
-        labels = group["label"].map(label_to_idx).values
+        if has_labels:
+            labels = group["label"].map(label_to_idx).fillna(0).values
+        else:
+            labels = np.zeros(len(group), dtype=np.int64)
         sids = group["session_id"].values
         n = len(group)
         for idx in range(n):
