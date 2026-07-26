@@ -97,7 +97,7 @@ Short version: three models score every session (an isolation forest baseline,
 a random forest over tabular features, and a GRU over each entity's recent
 session window), blended into one risk score. New entities get their score
 pulled toward the population baseline until they build up history - without
-that, a device's first session scores 0.83 purely for being unfamiliar. Two
+that, a device's first session scores 0.57 purely for being unfamiliar. Two
 z-scored features (session duration, login hour) use a trailing 30-day window
 per entity rather than all-time history, so a permanent behavior shift stops
 being flagged after it's been the norm for a while. A separate 7-day resource-

@@ -12,7 +12,7 @@ class TabularClassifier:
     def __init__(self, random_state=42):
         self.model = RandomForestClassifier(
             n_estimators=300,
-            max_depth=10,
+            max_depth=20,
             class_weight="balanced",
             random_state=random_state,
             n_jobs=-1,

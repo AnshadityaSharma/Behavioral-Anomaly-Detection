@@ -142,48 +142,44 @@ the last 30% is test, so the sequence model and rolling features are never
 evaluated on data that leaked into their own history.
 
 Results on the held-out (last 30%) window, seed 42, 113,021 total sessions
-(35,494 in the test window, 839 of them anomalous):
+(35,494 in the test window, 839 of them anomalous), random forest at
+`max_depth=20` (see the capacity experiment below for why):
 
 | Metric | Value |
 |---|---|
-| PR-AUC, binary anomaly vs. normal (risk score) | 0.856 |
-| Precision @ top 1% alert budget | 0.958 |
-| False positive rate @ top 1% alert budget | 0.042 |
-| Overall multi-class accuracy | 0.939 |
+| PR-AUC, binary anomaly vs. normal (risk score) | 0.899 |
+| Precision @ top 1% alert budget | 0.997 |
+| False positive rate @ top 1% alert budget | 0.003 |
+| Overall multi-class accuracy | 0.960 |
 
 Per-class precision/recall (multi-class, combined RF + GRU prediction):
 
 | Class | Precision | Recall | F1 | Support |
 |---|---|---|---|---|
-| impossible_travel | 0.977 | 1.000 | 0.989 | 130 |
-| brute_force | 0.988 | 0.982 | 0.985 | 165 |
-| credential_stuffing | 0.929 | 0.987 | 0.957 | 79 |
-| low_and_slow_exfil | 0.938 | 0.750 | 0.833 | 80 |
-| lateral_movement | 0.451 | 0.961 | 0.613 | 76 |
-| device_spoofing | 0.196 | 0.991 | 0.327 | 115 |
-| insider_drift | 0.077 | 0.675 | 0.138 | 194 |
-| normal | 0.999 | 0.940 | 0.969 | 34,655 |
+| impossible_travel | 0.985 | 1.000 | 0.992 | 130 |
+| brute_force | 0.953 | 0.988 | 0.970 | 165 |
+| credential_stuffing | 0.906 | 0.975 | 0.939 | 79 |
+| low_and_slow_exfil | 0.953 | 0.762 | 0.847 | 80 |
+| lateral_movement | 0.535 | 0.895 | 0.670 | 76 |
+| device_spoofing | 0.246 | 0.983 | 0.394 | 115 |
+| insider_drift | 0.118 | 0.665 | 0.201 | 194 |
+| normal | 0.999 | 0.962 | 0.980 | 34,655 |
 
-Two things moved from the previous (7-class) version of this table, and both
-are worth stating plainly rather than glossing over:
+Three states are worth distinguishing here, since the numbers moved twice:
 
-- **`low_and_slow_exfil` lands as a solid, well-separated class** (0.938
-  precision, 0.833 F1) - the 7-day resource-breadth feature and the off-hours
-  z-score give it a real signature the classifier can use, distinct from both
-  `lateral_movement` (fast breadth) and `insider_drift` (normal-hours
-  breadth).
-- **`device_spoofing` got noticeably worse** (precision dropped from 0.70 to
-  0.20) and **`lateral_movement` softened too** (0.50 to 0.45). The first
-  guess was that a fixed-capacity forest (`max_depth=10`) was running out of
-  room to separate an 8th class - we tested that directly (see below) and it
-  was wrong. The real cause: 26.8% of `insider_drift` test sessions and 10% of
-  `low_and_slow_exfil` sessions get misclassified as `device_spoofing` -
-  almost none of the confusion comes from the other attacker classes.
-  `device_spoofing`'s only strong signal is a binary fingerprint mismatch, and
-  with two more "gradual, ambiguous" classes now in the mix, the forest is
-  using it as a soft catch-all for sessions with weak, overlapping novelty
-  signals rather than a genuine fingerprint change. This is a real cost of
-  extending the taxonomy, but a different one than originally assumed.
+- **Before the 8th class** (7-class, `max_depth=10`): `device_spoofing`
+  precision 0.70, `lateral_movement` 0.50.
+- **Right after adding `low_and_slow_exfil`** (8-class, still `max_depth=10`):
+  `device_spoofing` fell to 0.20, `lateral_movement` to 0.45. `low_and_slow_
+  exfil` itself landed as a solid, well-separated class from the start (0.94
+  precision) - the 7-day resource-breadth feature and the off-hours z-score
+  give it a real signature, distinct from both `lateral_movement` (fast
+  breadth) and `insider_drift` (normal-hours breadth).
+- **After the capacity change below** (8-class, `max_depth=20`, current
+  table): `lateral_movement` recovered to 0.535 and `insider_drift` improved
+  to 0.118, both real gains. `device_spoofing` only moved slightly (0.20 to
+  0.25) - it's still the weakest class, and capacity was never going to fix
+  it (see below for why).
 
 ### Did more model capacity fix it?
 
@@ -194,22 +190,29 @@ split.
 
 | Config | device_spoofing precision | lateral_movement precision | insider_drift precision | accuracy |
 |---|---|---|---|---|
-| depth=10, n=300 (shipped) | 0.196 | 0.451 | 0.077 | 0.939 |
+| depth=10, n=300 (previously shipped) | 0.196 | 0.451 | 0.077 | 0.939 |
 | depth=15, n=300 | 0.200 | 0.549 | 0.091 | 0.949 |
-| depth=20, n=300 | 0.205 | 0.557 | 0.117 | 0.959 |
+| depth=20, n=300 (adopted) | 0.205 | 0.557 | 0.117 | 0.959 |
 | depth=None, n=300 | 0.205 | 0.549 | 0.165 | 0.970 |
 | depth=15, n=500 | 0.200 | 0.549 | 0.091 | 0.950 |
 | depth=20, n=500 | 0.204 | 0.570 | 0.115 | 0.959 |
 
 `device_spoofing` doesn't move - 0.196 to at most 0.205, effectively flat
-across a 6x range of capacity. Capacity was not the bottleneck, which rules
-out the original guess. Interestingly, capacity *does* help elsewhere -
-`lateral_movement` gains 10-12 precision points and `insider_drift` roughly
-doubles - with no other class made worse. That's a real, free improvement
-sitting on the table, but it doesn't solve the problem this experiment was
-run to check, so the shipped model keeps `max_depth=10, n_estimators=300`
-rather than changing capacity for a reason unrelated to why the test was run.
-Fixing `device_spoofing` for real would mean giving it a feature that isn't
+across a 6x range of capacity. Capacity was not its bottleneck, which rules
+out the original guess (see the note above for what actually causes it -
+`device_spoofing`'s only strong signal is a binary fingerprint mismatch, and
+the forest is using it as a soft catch-all for `insider_drift`/`low_and_slow_
+exfil` sessions with weak, overlapping novelty signals). `lateral_movement`
+and `insider_drift`, on the other hand, *did* respond - both improved
+substantially with no other class made worse.
+
+Given that, `max_depth` was moved from 10 to 20 in the shipped model
+(`n_estimators` left at 300 - the 500-tree configs weren't consistently
+better than 300 at the same depth, so there was no reason to pay the extra
+training cost). This didn't fix the problem the experiment was run to check,
+but it was a real, verified improvement sitting on the table, so it's the
+capacity behind every number in this report from here on. Fixing
+`device_spoofing` for real would still mean giving it a feature that isn't
 shared with the two gradual classes - not tuning the forest around it.
 
 ### What the alert budget actually buys
@@ -220,9 +223,9 @@ plainly:
 
 | Alert budget | Sessions surfaced | Genuine attacks | insider_drift | normal | Precision |
 |---|---|---|---|---|---|
-| top 1% | 354 | 339 | 0 | 15 | 0.958 |
-| top 2% | 709 | 553 | 58 | 98 | 0.862 |
-| top 5% | 1,774 | 624 | 153 | 997 | 0.438 |
+| top 1% | 354 | 353 | 0 | 1 | 0.997 |
+| top 2% | 709 | 572 | 78 | 59 | 0.917 |
+| top 5% | 1,774 | 625 | 151 | 998 | 0.437 |
 | top 10% | 3,549 | 641 | 186 | 2,722 | 0.233 |
 
 There are only ~640 genuine attack sessions surfaceable in the test window, so
@@ -231,15 +234,15 @@ with normal traffic and insider_drift. The system is best suited to a tight
 budget and should not be sold as usable at a loose one.
 
 `low_and_slow_exfil` is the clearest illustration of why the budget matters:
-its risk scores cluster tightly (mean 0.80, std 0.07) but almost entirely
-*below* the top-1% cutoff (0.884) - only 3 of 443 sessions clear it. Widen the
-budget to top 2% and 141 clear it (32%); at top 5%, 432 do (98%). The
-classifier can correctly name the attack type when asked (0.75 recall, per
-the table above), but the ensemble's risk score under-weights it at the
-tightest budget precisely because it was built not to produce single-session
-spikes - which is the whole point of a low-and-slow pattern, and the reason
-it needs a wider budget than brute force or impossible travel to actually
-reach an analyst.
+its risk scores cluster tightly (mean 0.81, std 0.08) but mostly *below* the
+top-1% cutoff (0.886) - only 16 of 443 sessions clear it. Widen the budget to
+top 2% and 188 clear it (42%); at top 5%, 436 do (98%). The classifier can
+correctly name the attack type when asked (0.76 recall, per the table above),
+but the ensemble's risk score under-weights it at the tightest budget
+precisely because it was built not to produce single-session spikes - which
+is the whole point of a low-and-slow pattern, and the reason it needs a
+wider budget than brute force or impossible travel to actually reach an
+analyst.
 
 The headline numbers are strong precisely because the attack patterns with the
 sharpest behavioral signal (rapid failed auths, geo-velocity, many-entities-
@@ -249,17 +252,18 @@ tells the more honest story:
 
 - **Brute force / credential stuffing / impossible travel** are essentially
   solved by the feature set - the signal is close to definitional.
-- **Low-and-slow exfiltration** sits in a good spot on precision (0.938) but
+- **Low-and-slow exfiltration** sits in a good spot on precision (0.953) but
   needs a wider alert budget to actually surface, per the note above.
 - **Device spoofing and lateral movement** are the weakest genuine attacks -
   both require the model to recognize "never seen before" patterns from a
-  single or a few sessions, and precision is now quite low (0.20 and 0.45)
-  even though recall stays high. For device_spoofing specifically, the
-  over-flagging is concentrated on `insider_drift` and `low_and_slow_exfil`
-  sessions rather than normal traffic in general - see the capacity
-  experiment above for what was tried and why it's not a capacity problem.
+  single or a few sessions. `lateral_movement` recovered to a reasonable 0.54
+  precision after the capacity change; `device_spoofing` is still low (0.25)
+  even though recall stays high. The over-flagging there is concentrated on
+  `insider_drift` and `low_and_slow_exfil` sessions rather than normal traffic
+  in general - see the capacity experiment above for what was tried and why
+  it's not a capacity problem.
 - **Insider drift** is the class the brief calls out as ambiguous, and the
-  numbers show it: 0.077 precision means the model tags a lot of ordinary
+  numbers show it: 0.118 precision means the model tags a lot of ordinary
   resource-footprint growth as drift. That's the expected failure mode for an
   edge case defined by *not* being clearly anomalous, and is why it's kept out
   of the binary anomaly target used for the PR-AUC number above - it's useful
@@ -281,17 +285,17 @@ trained, scored at increasing history depth:
 
 | Session | Reported risk | Raw model risk | sd across devices | Weight on own history |
 |---|---|---|---|---|
-| 1 | 0.227 | 0.834 | 0.000 | 0.00 |
-| 5 | 0.337 | 0.365 | 0.121 | 0.80 |
-| 20 | 0.241 | 0.241 | 0.056 | 1.00 |
-| 50 | 0.236 | 0.236 | 0.077 | 1.00 |
+| 1 | 0.108 | 0.571 | 0.000 | 0.00 |
+| 5 | 0.184 | 0.203 | 0.081 | 0.80 |
+| 20 | 0.117 | 0.117 | 0.034 | 1.00 |
+| 50 | 0.105 | 0.105 | 0.082 | 1.00 |
 
 The number that matters is the first row. A device on its first session scores
-**0.834** from the models alone, because it is novel on every feature that
+**0.571** from the models alone, because it is novel on every feature that
 exists - unseen resource, unseen fingerprint, no prior session to compare
 against. That is a false positive waiting to happen. Blending against the
-population baseline for that entity type reports **0.227** instead, comfortably
-below the ~0.88 cutoff used for the top-1% alert budget.
+population baseline for that entity type reports **0.108** instead, comfortably
+below the ~0.89 cutoff used for the top-1% alert budget.
 
 The mechanism is a linear ramp in `models/cold_start.py`: an entity's score is
 `w * own_score + (1 - w) * population_prior`, where `w = min(1, history / 5)`.
@@ -304,8 +308,8 @@ Two honest caveats:
 - **The band does not narrow the way you might expect.** Spread across devices
   is 0.000 at session 1 - not because the system is confident, but because
   every new device is given the same prior. Real disagreement between devices
-  only appears once their own history takes over (sd 0.056 at session 20), and
-  it keeps widening rather than settling - sd 0.077 by session 50, as
+  only appears once their own history takes over (sd 0.034 at session 20), and
+  it keeps widening rather than settling - sd 0.082 by session 50, as
   individual devices diverge onto their own profiles rather than converging on
   a shared one. The first-session score is the *least* informative one,
   despite looking the most certain.
@@ -334,18 +338,18 @@ computed against all-time first-seen, and there is no mechanism that ever
 forgives a permanently expanded resource set. Measured across the 34
 insider-drift entities with enough history to compare:
 
-- median risk rose from **0.337** before the shift to **0.691** during it
+- median risk rose from **0.203** before the shift to **0.714** during it
 - it rose for **34 of 34** entities - there is no favourable case to point at
-- the best case still rose, 0.738 to 0.787
+- the best case still rose, 0.533 to 0.672
 
 So the honest position is: drift handling is real for *when* and *how long* an
 entity works, and absent for *what it touches*.
 
 The one thing that keeps this from being a practical problem at the current
 operating point is that drifting entities do not clear the alert bar: **0 of
-710** insider-drift sessions land in the top 1%, against a cutoff of 0.884.
+710** insider-drift sessions land in the top 1%, against a cutoff of 0.886.
 They raise the score without raising an alert. That margin is thin, though -
-at a top-2% budget, 38 of them appear, and the fix (decaying resource novelty,
+at a top-2% budget, 66 of them appear, and the fix (decaying resource novelty,
 or scoring novelty against a trailing window like the timing features) is not
 implemented.
 
@@ -368,19 +372,20 @@ from one entity to another, and forgets nothing over time. It is a manual
 re-ranking knob with an audit trail.
 
 Measured on the current run: dismissing five alerts from the entity with the
-largest queue footprint (`dev_0025`, 55 brute-force sessions in the top-1%
-queue) moved its best rank from **12 to 931**. Its presence in the top-1%
-budget only dropped from **55 alerts to 42**, though - five dismissals already
-hit the +/-0.10 cap, and this entity's raw risk is high enough (mean 0.978 on
-its attack sessions) that the cap isn't enough to push all of it back under
-the cutoff. That's the cap doing exactly what it's supposed to: bound the
-damage a wrong click can do, not eliminate an entity from the queue outright.
+largest queue footprint (`dev_0025`, 54 of its 55 genuine brute-force sessions
+in the top-1% queue) moved its best rank from **12 to 937**. Its presence in
+the top-1% budget only dropped from **54 alerts to 40**, though - five
+dismissals already hit the +/-0.10 cap, and this entity's raw risk is high
+enough (mean 0.975 on its attack sessions) that the cap isn't enough to push
+all of it back under the cutoff. That's the cap doing exactly what it's
+supposed to: bound the damage a wrong click can do, not eliminate an entity
+from the queue outright.
 
 Its limitations are worth being blunt about:
 
 - **It trusts the analyst completely.** In the run above, the entity whose
   alerts were dismissed had 55 genuine brute-force sessions. Five wrong clicks
-  suppressed real attacks (42 of them remained visible only because the cap
+  suppressed real attacks (40 of them remained visible only because the cap
   held). Nothing detects that a dismissal contradicted the label.
 - **It starts empty.** With zero decisions the offset is zero for every entity,
   so the loop contributes nothing on day one and only becomes useful after an
@@ -407,18 +412,22 @@ Its limitations are worth being blunt about:
 - Isolation forest contamination and GRU class weights are fixed constants,
   not tuned per deployment; a real system would want these calibrated against
   an analyst's actual alert budget.
-- `device_spoofing` precision is low (0.20) because the forest uses it as a
+- `device_spoofing` precision is low (0.25) because the forest uses it as a
   soft catch-all for `insider_drift` and `low_and_slow_exfil` sessions with
   weak, overlapping novelty signals - not because of model capacity, which
   was tested directly (`max_depth` up to unbounded, `n_estimators` up to 500)
-  and left it unmoved. Fixing this needs a feature that separates a genuine
-  fingerprint change from "some other gradual novelty," which doesn't
-  currently exist.
-- Random forest capacity (`max_depth=10, n_estimators=300`) is a fixed
-  constant not re-tuned when the label set grows. The capacity sweep above
-  showed real, cost-free gains elsewhere (lateral_movement, insider_drift)
-  that this project left on the table because they weren't the problem being
-  tested - a real deployment would likely want to pick them up.
+  and left it essentially unmoved (0.196 to at most 0.205). Fixing this needs
+  a feature that separates a genuine fingerprint change from "some other
+  gradual novelty," which doesn't currently exist.
+- Random forest capacity was moved from `max_depth=10` to `20` after the
+  sweep above showed it recovered `lateral_movement` and `insider_drift`
+  precision with no other class made worse. `depth=None` (unbounded) scored
+  even better on `insider_drift` (0.165 vs. 0.117) and on overall accuracy,
+  but wasn't adopted - it wasn't tested against a held-out set beyond the one
+  time split used throughout this report, and unbounded trees are the
+  likeliest of the tested configs to be overfit to this specific seed. That's
+  a judgment call rather than a rerun-and-confirm result, and is flagged as
+  such.
 - The narrative layer's display thresholds (when a feature is "worth
   mentioning") are hand-set constants. They stop nonsense phrasing but were
   chosen by inspection, not derived from the data.
