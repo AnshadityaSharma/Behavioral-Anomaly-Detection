@@ -110,6 +110,10 @@ authentication failure rate from this source IP"), with the SHAP values behind
 it available in the dashboard. Analysts can confirm or dismiss alerts;
 dismissals push that entity down the queue by a capped, documented offset.
 
-The report is explicit about where this falls short - resource-footprint drift
-is not forgiven, the feedback loop trusts the analyst blindly, and precision
-degrades sharply past a top-2% alert budget.
+The report is explicit about where this falls short. The two that matter most:
+the risk score and the type classifier disagree for half the attack types
+(device spoofing is typed correctly 99.4% of the time but reaches the top-1%
+queue 1.8% of the time), and the feedback loop's +/-0.10 cap is larger than the
+cutoff margin for 96% of queued entities, so a single analyst can clear almost
+any entity out of the queue. Also: resource-footprint drift is never forgiven,
+and precision degrades sharply past a top-2% alert budget.
