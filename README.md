@@ -26,13 +26,17 @@ it.
   - `sequence_model.py` - small GRU over each entity's recent session window
   - `cold_start.py` - blends a new entity's score toward its population
     baseline until it has enough history of its own
-- `src/explain/` - SHAP-based attribution turned into short, readable reasons
-  per alert.
+- `src/explain/` - SHAP attribution composed into a one-sentence explanation
+  per alert, with the raw values kept alongside it.
 - `src/pipeline.py` - runs the whole thing end to end and writes scored
   sessions + metrics to `data/processed/`.
-- `src/dashboard/app.py` - Streamlit analyst view: ranked alert queue, risk
-  score breakdown, entity history.
-- `tests/` - pytest coverage for the generator, features, and models.
+- `src/demo/coldstart_drift.py` - reproduces the cold-start and drift evidence
+  in the report as two charts.
+- `src/dashboard/app.py` - Streamlit analyst view: ranked alert queue, alert
+  detail with explanation and entity history, confirm/dismiss triage, and a
+  system-behaviour tab.
+- `tests/` - pytest coverage for the generator, features, models, cold-start
+  blending, and the feedback loop.
 
 ## Setup
 
@@ -63,6 +67,13 @@ To regenerate the dataset on its own (e.g. with a different seed):
 python -m src.generator.generate_dataset --seed 7
 ```
 
+Reproduce the cold-start and concept-drift charts used in the report (needs the
+pipeline to have run once, since it reuses the trained models):
+
+```bash
+python -m src.demo.coldstart_drift
+```
+
 Launch the dashboard once `data/processed/` exists:
 
 ```bash
@@ -83,7 +94,18 @@ Full assumptions, metrics, and known limitations are in
 Short version: three models score every session (an isolation forest baseline,
 a random forest over tabular features, and a GRU over each entity's recent
 session window), blended into one risk score. New entities get their score
-pulled toward the population baseline until they build up history. Two
+pulled toward the population baseline until they build up history - without
+that, a device's first session scores 0.69 purely for being unfamiliar. Two
 z-scored features (session duration, login hour) use a trailing 30-day window
 per entity rather than all-time history, so a permanent behavior shift stops
 being flagged after it's been the norm for a while.
+
+Each alert carries a generated one-line explanation ("Flagged as brute force
+due to 47 failed logins for this entity within 10 minutes, combined with a 100%
+authentication failure rate from this source IP"), with the SHAP values behind
+it available in the dashboard. Analysts can confirm or dismiss alerts;
+dismissals push that entity down the queue by a capped, documented offset.
+
+The report is explicit about where this falls short - resource-footprint drift
+is not forgiven, the feedback loop trusts the analyst blindly, and precision
+degrades sharply past a top-2% alert budget.
