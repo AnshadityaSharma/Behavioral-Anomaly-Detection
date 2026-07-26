@@ -4,6 +4,7 @@ __pycache__/
 .pytest_cache/
 data/raw/
 data/processed/
+/models/
 *.egg-info/
 .ipynb_checkpoints/
 .DS_Store
