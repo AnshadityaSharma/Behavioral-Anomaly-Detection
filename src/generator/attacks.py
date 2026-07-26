@@ -193,6 +193,54 @@ def _sample_hour_like(profile, rng):
     return float(rng.normal(profile["hour_mean"], profile["hour_std"]) % 24)
 
 
+def inject_low_and_slow_exfil(profiles, rng, n_incidents):
+    """Small resource-access bursts concentrated in off-hours, accumulating
+    gradually over days to weeks rather than in one spike. Distinct from
+    lateral_movement (many resources hopped in a single short burst) and from
+    insider_drift (which samples hours from the entity's own normal
+    distribution, not an off-hours window - drift looks routine, this
+    doesn't)."""
+    rows = []
+    candidates = [eid for eid, p in profiles.items() if p["entity_type"] in ("user", "service_account")]
+    for _ in range(n_incidents):
+        eid = rng.choice(candidates)
+        profile = profiles[eid]
+        unseen = [r for r in profile["all_resources"] if r not in profile["typical_resources"]]
+        if not unseen:
+            continue
+        span_days = int(rng.integers(10, 25))
+        start_day = int(rng.integers(
+            profile["joined_day"], max(profile["joined_day"] + 1, config.SIM_DAYS - span_days)
+        ))
+        off_hour_center = (profile["hour_mean"] + 12) % 24
+
+        touched = []
+        for day_offset in range(span_days):
+            day = start_day + day_offset
+            if day >= config.SIM_DAYS:
+                break
+            if rng.random() < 0.6:
+                continue  # gradual: most days see nothing at all
+            n_sessions_today = int(rng.integers(1, 3))
+            for _ in range(n_sessions_today):
+                hour = float(rng.normal(off_hour_center, 1.5) % 24)
+                ts = config.SIM_START + timedelta(days=day, hours=hour)
+                if len(touched) < len(unseen) and (not touched or rng.random() < 0.5):
+                    resource = unseen[len(touched)]
+                    touched.append(resource)
+                else:
+                    resource = rng.choice(touched) if touched else unseen[0]
+                commands = ["export_data"] if rng.random() < 0.3 else []
+                rows.append(_row(
+                    eid, profile["entity_type"], ts, profile["home_ip"],
+                    profile["home_lat"], profile["home_lon"], profile["home_city"],
+                    resource, profile["auth_method"], True,
+                    max(1.0, rng.normal(profile["duration_mean"] * 1.3, profile["duration_std"])),
+                    commands, profile["os_name"], profile["mac"], "low_and_slow_exfil",
+                ))
+    return rows
+
+
 def inject_all(profiles, normal_rows, rng):
     normal_df = pd.DataFrame(normal_rows)
     total_normal = len(normal_rows)
@@ -210,4 +258,6 @@ def inject_all(profiles, normal_rows, rng):
         profiles, rng, max(1, int(total_normal * config.ATTACK_RATES["device_spoofing"])))
     rows += inject_insider_drift(
         profiles, rng, max(1, int(total_normal * config.ATTACK_RATES["insider_drift"] / 12)))
+    rows += inject_low_and_slow_exfil(
+        profiles, rng, max(1, int(total_normal * config.ATTACK_RATES["low_and_slow_exfil"] / 10)))
     return rows

@@ -180,7 +180,9 @@ def pick_drift_and_attack(scored):
 
     # rank attackers on their attack sessions only; averaging over an entity's
     # whole history buries a short burst under months of normal traffic
-    attack_rows = scored[scored["label"].isin(["lateral_movement", "brute_force"])]
+    attack_rows = scored[scored["label"].isin(
+        ["lateral_movement", "brute_force", "low_and_slow_exfil"]
+    )]
     attack_stats = attack_rows.groupby("entity_id")["risk_score"].agg(["mean", "size"])
     attack_stats = attack_stats[attack_stats["size"] >= 5].sort_values("mean", ascending=False)
     attack_pick = attack_stats.index[0] if len(attack_stats) else None

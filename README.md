@@ -13,7 +13,9 @@ it.
 
 - `src/generator/` - synthetic access-log generator: per-entity behavioral
   profiles (users, service accounts, edge devices) plus six injected attack
-  patterns and an ambiguous "insider drift" edge case.
+  patterns (including a low-and-slow exfiltration pattern that builds up
+  gradually in off-hours over days to weeks) plus an ambiguous "insider
+  drift" edge case - seven injected labels in total.
 - `src/features/` - turns raw session rows into per-session features
   (geo-velocity, resource novelty, device fingerprint mismatch, rolling
   failure/breadth windows) with a drift-tolerant rolling baseline instead of a
@@ -95,10 +97,12 @@ Short version: three models score every session (an isolation forest baseline,
 a random forest over tabular features, and a GRU over each entity's recent
 session window), blended into one risk score. New entities get their score
 pulled toward the population baseline until they build up history - without
-that, a device's first session scores 0.69 purely for being unfamiliar. Two
+that, a device's first session scores 0.83 purely for being unfamiliar. Two
 z-scored features (session duration, login hour) use a trailing 30-day window
 per entity rather than all-time history, so a permanent behavior shift stops
-being flagged after it's been the norm for a while.
+being flagged after it's been the norm for a while. A separate 7-day resource-
+breadth window catches slow, gradual resource accumulation that a 24-hour
+window would miss - the signature of the low-and-slow exfiltration pattern.
 
 Each alert carries a generated one-line explanation ("Flagged as brute force
 due to 47 failed logins for this entity within 10 minutes, combined with a 100%

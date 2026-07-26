@@ -95,6 +95,15 @@ def build_features(access_log, cold_start_threshold=COLD_START_THRESHOLD):
         .apply(lambda s: len(set(s)), raw=True)
         .reset_index(drop=True)
     )
+    # a longer trailing window than the 24h one above: a burst of lateral
+    # movement spikes the 24h count, while a slow accumulation of new
+    # resources over days/weeks only shows up once the window is wide enough
+    # to hold the whole build-up.
+    df["entity_resource_breadth_7d"] = (
+        grp.rolling("7D", on="timestamp")["_resource_code"]
+        .apply(lambda s: len(set(s)), raw=True)
+        .reset_index(drop=True)
+    )
     df["entity_failed_count_10min"] = (
         grp.rolling("10min", on="timestamp")["auth_failed"].sum().reset_index(drop=True)
     )
@@ -110,5 +119,6 @@ FEATURE_COLUMNS = [
     "entity_history_length", "is_cold_start", "is_new_resource", "is_device_mismatch",
     "auth_failed", "session_duration_z", "hour_of_day_z", "command_sequence_length",
     "has_privileged_command", "ip_session_count_10min", "ip_distinct_entities_10min",
-    "ip_failure_rate_10min", "entity_resource_breadth_24h", "entity_failed_count_10min",
+    "ip_failure_rate_10min", "entity_resource_breadth_24h", "entity_resource_breadth_7d",
+    "entity_failed_count_10min",
 ]

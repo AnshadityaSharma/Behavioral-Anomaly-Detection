@@ -20,6 +20,7 @@ ATTACK_RATES = {
     "lateral_movement": 0.004,
     "device_spoofing": 0.003,
     "insider_drift": 0.006,
+    "low_and_slow_exfil": 0.004,
 }
 
 ANOMALY_TYPES = list(ATTACK_RATES.keys())

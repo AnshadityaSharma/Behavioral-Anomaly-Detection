@@ -1,3 +1,5 @@
+import pandas as pd
+
 from src.generator.config import ALL_LABELS
 from src.generator.entities import build_entities
 from src.generator.generate_dataset import COLUMN_ORDER, build_dataset
@@ -29,3 +31,22 @@ def test_attack_rate_is_bounded(small_config):
     df, _ = build_dataset(seed=2)
     anomaly_rate = (df["label"] != "normal").mean()
     assert 0 < anomaly_rate < 0.25
+
+
+def test_low_and_slow_exfil_present_and_off_hours(small_config):
+    df, _ = build_dataset(seed=5)
+    exfil = df[df["label"] == "low_and_slow_exfil"]
+    assert len(exfil) > 0
+
+    hours = pd.to_datetime(exfil["timestamp"]).dt.hour
+    business_hours = hours.between(8, 17).mean()
+    assert business_hours < 0.15  # concentrated outside the normal working day
+
+
+def test_low_and_slow_exfil_spans_multiple_days(small_config):
+    df, _ = build_dataset(seed=5)
+    exfil = df[df["label"] == "low_and_slow_exfil"].copy()
+    exfil["timestamp"] = pd.to_datetime(exfil["timestamp"])
+    span = exfil.groupby("entity_id")["timestamp"].agg(lambda s: (s.max() - s.min()).days)
+    # a genuine low-and-slow pattern builds up over multiple days, not a spike
+    assert (span >= 3).any()

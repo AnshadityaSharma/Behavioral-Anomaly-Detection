@@ -12,6 +12,7 @@ TYPE_PHRASING = {
     "lateral_movement": "lateral movement",
     "device_spoofing": "device spoofing",
     "insider_drift": "insider drift",
+    "low_and_slow_exfil": "low-and-slow exfiltration",
 }
 
 
@@ -81,6 +82,12 @@ def _phrase_resource_breadth(value, row):
     return f"{_fmt_int(value)} different resources touched in 24 hours, well above this entity's norm"
 
 
+def _phrase_resource_breadth_7d(value, row):
+    if value < 6:
+        return None
+    return f"{_fmt_int(value)} different resources gradually touched over the trailing week"
+
+
 def _phrase_hour_z(value, row):
     if abs(value) < 1.5:
         return None
@@ -131,6 +138,7 @@ PHRASE_BUILDERS = {
     "ip_session_count_10min": _phrase_ip_session_count,
     "entity_failed_count_10min": _phrase_entity_failed,
     "entity_resource_breadth_24h": _phrase_resource_breadth,
+    "entity_resource_breadth_7d": _phrase_resource_breadth_7d,
     "hour_of_day_z": _phrase_hour_z,
     "session_duration_z": _phrase_duration_z,
     "has_privileged_command": _phrase_privileged_command,
