@@ -94,7 +94,8 @@ def build_entities(seed=config.SEED):
 
     # a handful of entities "join" partway through the simulation window to
     # exercise the cold-start path downstream.
-    cold_start_ids = rng.choice(list(profiles.keys()), size=25, replace=False)
+    n_cold_start = max(1, min(len(profiles), round(len(profiles) * 0.07)))
+    cold_start_ids = rng.choice(list(profiles.keys()), size=n_cold_start, replace=False)
     for eid in cold_start_ids:
         profiles[eid]["joined_day"] = int(rng.integers(config.SIM_DAYS - 10, config.SIM_DAYS - 1))
 

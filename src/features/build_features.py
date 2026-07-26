@@ -53,8 +53,7 @@ def build_features(access_log, cold_start_threshold=COLD_START_THRESHOLD):
     df["is_new_resource"] = df["is_new_resource"].where(df["entity_history_length"] > 0, 0)
 
     fingerprint = df["device_os"] + "::" + df["device_mac"]
-    baseline_fp = grp.apply(lambda g: pd.Series([g["device_os"].iloc[0] + "::" + g["device_mac"].iloc[0]] * len(g), index=g.index))
-    baseline_fp = baseline_fp.reset_index(level=0, drop=True)
+    baseline_fp = fingerprint.groupby(df["entity_id"], sort=False).transform("first")
     df["is_device_mismatch"] = (fingerprint != baseline_fp).astype(int)
 
     df["auth_failed"] = (~df["auth_success"].astype(bool)).astype(int)
