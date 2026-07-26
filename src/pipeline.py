@@ -5,13 +5,14 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import average_precision_score, classification_report
 
-from src.explain.attribution import build_explainer, compute_reasons
-from src.features.build_features import FEATURE_COLUMNS, build_features
+from src.explain.attribution import build_explainer, explain_sessions
+from src.features.build_features import build_features
 from src.generator.config import ALL_LABELS, SIM_DAYS
 from src.generator.generate_dataset import build_dataset
 from src.models.baseline import BaselineProfiler
 from src.models.classifier import TabularClassifier
 from src.models.cold_start import blend_cold_start_scores
+from src.models.persistence import save_bundle
 from src.models.sequence_model import SequenceAnomalyModel, build_sequences
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -54,6 +55,84 @@ def time_split_mask(timestamps, train_fraction=TRAIN_FRACTION):
     return timestamps < cutoff_ts
 
 
+def train_models(train_df):
+    baseline = BaselineProfiler().fit(train_df)
+    tabular = TabularClassifier().fit(train_df)
+
+    x_seq, y_seq, seq_session_ids = build_sequences(train_df)
+    seq_model = SequenceAnomalyModel(epochs=8).fit(x_seq, y_seq)
+
+    # the cold-start prior is fixed on training data so that scoring a new
+    # entity later doesn't depend on whatever else happens to be in the batch.
+    train_components = _component_scores(train_df, baseline, tabular, seq_model)
+    type_prior_map = (
+        pd.Series(train_components["raw_risk"], index=train_df["entity_type"])
+        .groupby(level=0).mean().to_dict()
+    )
+
+    return {
+        "baseline": baseline,
+        "tabular": tabular,
+        "sequence": seq_model,
+        "type_prior_map": type_prior_map,
+    }
+
+
+def _component_scores(features, baseline, tabular, seq_model):
+    baseline_risk = baseline.score(features)
+
+    tabular_proba = tabular.predict_proba(features)
+    tabular_classes = tabular.classes_
+    tabular_anomaly = 1 - tabular_proba[:, tabular_classes.index("normal")]
+
+    x_seq, _, seq_session_ids = build_sequences(features)
+    seq_order = pd.Series(range(len(seq_session_ids)), index=seq_session_ids)
+    x_seq = x_seq[seq_order.loc[features["session_id"]].values]
+    seq_proba = seq_model.predict_proba(x_seq)
+    seq_anomaly = 1 - seq_proba[:, ALL_LABELS.index("normal")]
+
+    tabular_proba_aligned = np.zeros((len(features), len(ALL_LABELS)))
+    for j, cls in enumerate(tabular_classes):
+        tabular_proba_aligned[:, ALL_LABELS.index(cls)] = tabular_proba[:, j]
+    combined_proba = (tabular_proba_aligned + seq_proba) / 2
+
+    raw_risk = (
+        RISK_WEIGHTS["baseline"] * baseline_risk
+        + RISK_WEIGHTS["tabular"] * tabular_anomaly
+        + RISK_WEIGHTS["sequence"] * seq_anomaly
+    )
+
+    return {
+        "baseline_risk": baseline_risk,
+        "tabular_anomaly": tabular_anomaly,
+        "sequence_anomaly": seq_anomaly,
+        "combined_proba": combined_proba,
+        "raw_risk": raw_risk,
+    }
+
+
+def score_frame(features, models):
+    components = _component_scores(
+        features, models["baseline"], models["tabular"], models["sequence"]
+    )
+    combined_proba = components["combined_proba"]
+    predicted_idx = combined_proba.argmax(axis=1)
+
+    risk_score = blend_cold_start_scores(
+        features, components["raw_risk"], models["type_prior_map"]
+    )
+
+    return {
+        "risk_score": risk_score,
+        "raw_risk": components["raw_risk"],
+        "predicted_type": [ALL_LABELS[i] for i in predicted_idx],
+        "confidence": combined_proba.max(axis=1),
+        "baseline_risk": components["baseline_risk"],
+        "tabular_anomaly": components["tabular_anomaly"],
+        "sequence_anomaly": components["sequence_anomaly"],
+    }
+
+
 def run(seed=42):
     access_log, labels, entities = load_or_generate_raw(seed)
     features = build_features(access_log)
@@ -62,54 +141,23 @@ def run(seed=42):
     train_mask = time_split_mask(features["timestamp"])
     train_df = features[train_mask].reset_index(drop=True)
 
-    baseline = BaselineProfiler().fit(train_df)
-    baseline_risk = baseline.score(features)
+    models = train_models(train_df)
+    scores = score_frame(features, models)
+    risk_score = scores["risk_score"]
+    predicted_type = scores["predicted_type"]
 
-    tabular = TabularClassifier().fit(train_df)
-    tabular_proba = tabular.predict_proba(features)
-    tabular_classes = tabular.classes_
-    normal_idx = tabular_classes.index("normal")
-    tabular_anomaly = 1 - tabular_proba[:, normal_idx]
-
-    x_seq, y_seq, seq_session_ids = build_sequences(features)
-    seq_order = pd.Series(range(len(seq_session_ids)), index=seq_session_ids)
-    features_order = seq_order.loc[features["session_id"]].values
-    x_seq = x_seq[features_order]
-    y_seq = y_seq[features_order]
-
-    seq_train_mask = train_mask.values
-    seq_model = SequenceAnomalyModel(epochs=8).fit(x_seq[seq_train_mask], y_seq[seq_train_mask])
-    seq_proba = seq_model.predict_proba(x_seq)
-    normal_label_idx = ALL_LABELS.index("normal")
-    seq_anomaly = 1 - seq_proba[:, normal_label_idx]
-
-    tabular_proba_aligned = np.zeros((len(features), len(ALL_LABELS)))
-    for j, cls in enumerate(tabular_classes):
-        tabular_proba_aligned[:, ALL_LABELS.index(cls)] = tabular_proba[:, j]
-    combined_proba = (tabular_proba_aligned + seq_proba) / 2
-    predicted_idx = combined_proba.argmax(axis=1)
-    predicted_type = [ALL_LABELS[i] for i in predicted_idx]
-    confidence = combined_proba.max(axis=1)
-
-    raw_risk = (
-        RISK_WEIGHTS["baseline"] * baseline_risk
-        + RISK_WEIGHTS["tabular"] * tabular_anomaly
-        + RISK_WEIGHTS["sequence"] * seq_anomaly
-    )
-    type_prior_map = pd.Series(raw_risk, index=features["entity_type"]).groupby(level=0).mean().to_dict()
-    risk_score = blend_cold_start_scores(features, raw_risk, type_prior_map)
+    save_bundle(models)
 
     # SHAP attribution is only worth the cost for sessions an analyst would
     # actually see, not the entire (mostly normal) session log.
-    reasons = np.full(len(features), "", dtype=object)
     reason_cutoff = np.quantile(risk_score, 1 - REASON_COVERAGE)
     reason_mask = risk_score >= reason_cutoff
-    explainer = build_explainer(tabular)
-    reasons[reason_mask] = compute_reasons(
+    explainer = build_explainer(models["tabular"])
+    explained = explain_sessions(
         explainer,
         features[reason_mask].reset_index(drop=True),
         np.array(predicted_type)[reason_mask],
-        tabular_classes,
+        models["tabular"].classes_,
     )
 
     scored = features[[
@@ -118,8 +166,18 @@ def run(seed=42):
     ]].copy()
     scored["risk_score"] = risk_score
     scored["predicted_type"] = predicted_type
-    scored["confidence"] = confidence
-    scored["reasons"] = reasons
+    scored["confidence"] = scores["confidence"]
+    scored["baseline_risk"] = scores["baseline_risk"]
+    scored["tabular_anomaly"] = scores["tabular_anomaly"]
+    scored["sequence_anomaly"] = scores["sequence_anomaly"]
+
+    scored["explanation"] = ""
+    scored["reasons"] = ""
+    scored["shap_detail"] = ""
+    scored.loc[reason_mask, "explanation"] = explained["explanation"].values
+    scored.loc[reason_mask, "reasons"] = explained["reasons"].values
+    scored.loc[reason_mask, "shap_detail"] = explained["shap_detail"].values
+
     scored = scored.sort_values("risk_score", ascending=False).reset_index(drop=True)
 
     PROCESSED_DIR.mkdir(parents=True, exist_ok=True)

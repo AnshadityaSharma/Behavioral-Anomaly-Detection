@@ -17,4 +17,7 @@ def blend_cold_start_scores(features_df, risk_scores, type_prior_scores, thresho
 def cold_start_note(history_length, threshold=COLD_START_THRESHOLD):
     if history_length >= threshold:
         return None
-    return f"limited history ({int(history_length)} prior sessions) - score blended with population baseline"
+    return (
+        f"Treat with caution: only {int(history_length)} prior sessions on record, "
+        "so the score is still partly the population baseline rather than this entity's own history."
+    )
