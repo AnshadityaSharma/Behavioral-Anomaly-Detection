@@ -1,2 +1,3 @@
 -r requirements.txt
+matplotlib==3.11.1
 pytest>=8,<10

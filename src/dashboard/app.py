@@ -11,7 +11,6 @@ import streamlit as st
 
 from src.dashboard import feedback
 from src.dashboard.detection import DEMO_PATH, risk_levels, score_upload, validate_access_log
-from src.models.persistence import load_bundle
 
 PROCESSED_DIR = ROOT / "data" / "processed"
 FIGURE_DIR = ROOT / "reports" / "figures"
@@ -37,6 +36,7 @@ def load_data():
 
 @st.cache_resource(show_spinner="Loading the trained detection models…")
 def cached_bundle():
+    from src.models.persistence import load_bundle
     return load_bundle()
 
 

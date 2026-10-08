@@ -7,8 +7,7 @@ from sklearn.metrics import average_precision_score, classification_report
 
 from src.explain.attribution import build_explainer, explain_sessions
 from src.features.build_features import build_features
-from src.generator.config import ALL_LABELS, SIM_DAYS
-from src.generator.generate_dataset import build_dataset
+from src.generator.config import ALL_LABELS, COLUMN_ORDER, SIM_DAYS
 from src.models.baseline import BaselineProfiler
 from src.models.classifier import TabularClassifier
 from src.models.cold_start import blend_cold_start_scores
@@ -38,9 +37,10 @@ def load_or_generate_raw(seed):
         return access_log, labels, entities
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
+    from src.generator.generate_dataset import build_dataset
+
     df, entities = build_dataset(seed)
     labels = df[["session_id", "label"]].copy()
-    from src.generator.generate_dataset import COLUMN_ORDER
     access_log = df[COLUMN_ORDER].copy()
 
     access_log.to_csv(access_path, index=False)
