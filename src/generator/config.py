@@ -1,5 +1,14 @@
 from datetime import datetime, timedelta
 
+# Shared access-log schema. Keep this importable without loading the generator
+# and its Faker dependency so the deployed dashboard can validate uploads.
+COLUMN_ORDER = [
+    "session_id", "entity_id", "entity_type", "timestamp", "source_ip",
+    "geo_lat", "geo_lon", "geo_city", "resource_accessed", "auth_method",
+    "auth_success", "session_duration", "command_sequence", "device_os",
+    "device_mac",
+]
+
 SEED = 42
 
 N_USERS = 250

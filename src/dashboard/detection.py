@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.generator.generate_dataset import COLUMN_ORDER
+from src.generator.config import COLUMN_ORDER
 
 ROOT = Path(__file__).resolve().parents[2]
 DEMO_PATH = ROOT / "data" / "demo" / "scored_sessions.csv"

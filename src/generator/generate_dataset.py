@@ -5,19 +5,12 @@ import numpy as np
 import pandas as pd
 
 from src.generator import config
+from src.generator.config import COLUMN_ORDER
 from src.generator.attacks import inject_all
 from src.generator.entities import build_entities
 from src.generator.sessions import generate_normal_sessions
 
 OUT_DIR = Path(__file__).resolve().parents[2] / "data" / "raw"
-
-COLUMN_ORDER = [
-    "session_id", "entity_id", "entity_type", "timestamp", "source_ip",
-    "geo_lat", "geo_lon", "geo_city", "resource_accessed", "auth_method",
-    "auth_success", "session_duration", "command_sequence", "device_os",
-    "device_mac",
-]
-
 
 def build_dataset(seed=config.SEED):
     profiles = build_entities(seed)
