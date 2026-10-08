@@ -1,124 +1,78 @@
 # Behavioral Anomaly Detection
 
-AI/ML system for detecting and classifying anomalous access behavior (credential
-misuse, lateral movement, brute force, impossible travel, device spoofing) from
-entity access logs, with an explainable risk score for each alert.
+**ML-powered behavioral analytics for detecting anomalous access activity.**
 
-Since real access-log/intrusion data is scarce and privacy-restricted, this
-project generates its own synthetic dataset with injected attack patterns and
-ground-truth labels, then trains detection and classification models on top of
-it.
+## Live demo
 
-## What's inside
+Streamlit Community Cloud: **[Add deployment URL here]**
 
-- `src/generator/` - synthetic access-log generator: per-entity behavioral
-  profiles (users, service accounts, edge devices) plus six injected attack
-  patterns (including a low-and-slow exfiltration pattern that builds up
-  gradually in off-hours over days to weeks) plus an ambiguous "insider
-  drift" edge case - seven injected labels in total.
-- `src/features/` - turns raw session rows into per-session features
-  (geo-velocity, resource novelty, device fingerprint mismatch, rolling
-  failure/breadth windows) with a drift-tolerant rolling baseline instead of a
-  fixed all-time one.
-- `src/models/` - three complementary models:
-  - `baseline.py` - per-entity-type isolation forest plus a per-entity
-    statistical profile
-  - `classifier.py` - random forest over tabular features (multi-class
-    anomaly type, SHAP-friendly)
-  - `sequence_model.py` - small GRU over each entity's recent session window
-  - `cold_start.py` - blends a new entity's score toward its population
-    baseline until it has enough history of its own
-- `src/explain/` - SHAP attribution composed into a one-sentence explanation
-  per alert, with the raw values kept alongside it.
-- `src/pipeline.py` - runs the whole thing end to end and writes scored
-  sessions + metrics to `data/processed/`.
-- `src/demo/coldstart_drift.py` - reproduces the cold-start and drift evidence
-  in the report as two charts.
-- `src/dashboard/app.py` - Streamlit analyst view: ranked alert queue, alert
-  detail with explanation and entity history, confirm/dismiss triage, and a
-  system-behaviour tab.
-- `tests/` - pytest coverage for the generator, features, models, cold-start
-  blending, and the feedback loop.
+Open **Detect Anomalies** and click **Load Demo Dataset · Run Detection**. The bundled demo contains 8,000 deterministically sampled sessions from the project's synthetic access-log pipeline, with saved predictions and explanations. It opens without a training step.
 
-## Setup
+## What it does
 
-Requires Python 3.11+.
+The app helps an analyst move from a large access log to a ranked alert queue, investigate a session, and inspect the model evidence. It covers synthetic users, service accounts, and edge devices. Injected patterns include brute force, credential stuffing, impossible travel, lateral movement, device spoofing, insider drift, and low-and-slow exfiltration. These are synthetic research patterns, not claims of real-world detection performance.
+
+The public demo includes:
+
+- An overview of events, model-predicted anomalies, users/IPs, and activity over time.
+- A ranked, filterable alert queue and event investigation with recent entity history.
+- The existing deterministic explanation and SHAP attribution for high-risk sessions.
+- Model insights using saved held-out metrics from the full synthetic dataset.
+- Optional CSV upload for live inference using the existing trained ensemble.
+- Analyst confirm/dismiss feedback that reorders the local queue without retraining.
+
+## Architecture
+
+```text
+Synthetic access log or uploaded CSV
+             ↓
+Feature engineering: timing, geo, auth, devices, resources, rolling baselines
+             ↓
+Isolation Forest + Random Forest + GRU sequence model
+             ↓
+Weighted risk score → cold-start blending → ranked alerts
+             ↓
+Random Forest SHAP attribution → analyst investigation and feedback
+```
+
+The original pipeline lives in [`src/pipeline.py`](src/pipeline.py). It trains the three models on a time-based split, scores sessions, and saves full results under `data/processed/`. The Streamlit entrypoint is [`src/dashboard/app.py`](src/dashboard/app.py). Upload inference and validation live in [`src/dashboard/detection.py`](src/dashboard/detection.py). The app loads the existing [`models/trained_bundle.joblib`](models/trained_bundle.joblib) only when a CSV is scored, so the saved demo starts quickly. The bundle is around 44 MB; PyTorch is the largest deployment dependency.
+
+## Models and evidence
+
+| Component | Contribution |
+| --- | --- |
+| Isolation Forest | Scores unusual behavior within each entity type. |
+| Random Forest | Classifies attack types from engineered tabular features. |
+| GRU | Adds recent session sequence context. |
+| SHAP | Attributes the Random Forest's predicted type to contributing features for high-risk sessions. |
+
+Risk weights are 25% baseline, 35% tabular, and 40% sequence before cold-start blending. The app shows predicted anomaly types, not verified incidents. Risk bands are percentile bands **within the current dataset**; they are not calibrated probabilities. The Model Insights metrics come from the saved time-split evaluation of the full synthetic data and are not calculated from the 8,000-row demo excerpt or an upload. See [`reports/report.md`](reports/report.md) for the full evaluation and limitations.
+
+## Run locally
+
+Use Python 3.12 (the version used for local validation).
 
 ```bash
 python -m venv .venv
-.venv/Scripts/activate
+# Windows: .venv\Scripts\activate
+# macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-## Running it
-
-Generate the synthetic dataset and run the full pipeline (this also generates
-the data on first run if `data/raw/` is empty):
-
-```bash
-python -m src.pipeline
-```
-
-This writes `data/raw/access_log.csv`, `data/raw/labels.csv`,
-`data/raw/entities.csv`, and `data/processed/scored_sessions.csv` +
-`data/processed/metrics.json`.
-
-To regenerate the dataset on its own (e.g. with a different seed):
-
-```bash
-python -m src.generator.generate_dataset --seed 7
-```
-
-Reproduce the cold-start and concept-drift charts used in the report (needs the
-pipeline to have run once, since it reuses the trained models):
-
-```bash
-python -m src.demo.coldstart_drift
-```
-
-Launch the dashboard once `data/processed/` exists:
-
-```bash
 streamlit run src/dashboard/app.py
 ```
 
-Run tests:
+For tests, install `requirements-dev.txt` and run `python -m pytest`. To regenerate the full synthetic dataset, trained bundle, scores, and metrics, run `python -m src.pipeline`. This is a research/training command and is **not** part of the app's startup. `python -m src.generator.generate_dataset --seed 42` generates raw data separately.
 
-```bash
-pytest
-```
+To try upload inference, download the sample access log from the app. The CSV must use the generator's 15 access-log columns (`src/generator/generate_dataset.py`) and contain at most 10,000 rows. Inference builds behavioral history from the rows in that upload. Include enough history per entity for useful rolling and sequence features. There is no ground-truth evaluation for uploaded data.
 
-## Approach
+## Deploy on Streamlit Community Cloud
 
-Full assumptions, metrics, and known limitations are in
-[reports/report.md](reports/report.md).
+1. Push this repository, including `data/demo/` and `models/trained_bundle.joblib`, to GitHub.
+2. Create a Streamlit app from the repository. Set the main file path to `src/dashboard/app.py` and choose Python 3.12.
+3. Let Cloud install `requirements.txt`, then open the app and run the bundled demo.
+4. Replace the Live demo placeholder above with the app URL.
 
-Short version: three models score every session (an isolation forest baseline,
-a random forest over tabular features, and a GRU over each entity's recent
-session window), blended into one risk score. New entities get their score
-pulled toward the population baseline until they build up history - without
-that, a device's first session scores 0.57 purely for being unfamiliar. Two
-z-scored features (session duration, login hour) use a trailing 30-day window
-per entity rather than all-time history, so a permanent behavior shift stops
-being flagged after it's been the norm for a while. A separate 7-day resource-
-breadth window catches slow, gradual resource accumulation that a 24-hour
-window would miss - the signature of the low-and-slow exfiltration pattern.
+No secrets or external services are needed. Paths resolve from the repository root. The trained bundle is loaded lazily and cached for uploads. Community Cloud's local filesystem is ephemeral: analyst feedback can disappear when the app restarts or moves to another instance. Deploying PyTorch can take longer than a typical small Streamlit app.
 
-Each alert carries a generated one-line explanation ("Flagged as brute force
-due to 47 failed logins for this entity within 10 minutes, combined with a 100%
-authentication failure rate from this source IP"), with the SHAP values behind
-it available in the dashboard. Analysts can confirm or dismiss alerts;
-dismissals push that entity down the queue by a capped, documented offset.
+## Limitations and next steps
 
-The report is explicit about where this falls short. The one that matters most:
-the risk score and the type classifier disagree for half the attack types -
-device spoofing is typed correctly 99.4% of the time but reaches the top-1%
-queue 1.8% of the time. Also: resource-footprint drift is never forgiven, and
-precision degrades sharply past a top-2% alert budget.
-
-The feedback loop's abuse cap is measured in percentile rank rather than raw
-score, because a fixed score offset bounded almost nothing - it was wider than
-the cutoff margin for 96% of queued entities. Capping queue movement instead
-cut the share of entities an analyst can silently clear from 95.8% to 28.2%.
-That is a reduction rather than a fix, and the report is explicit that what
-remains is skewed toward low-footprint attackers.
+The data is synthetic, so real-world false positive rates are unknown. Scores and type predictions can disagree; some types have substantially weaker precision than others. SHAP here explains the Random Forest class prediction, not the whole weighted ensemble. Uploads with incomplete entity history may produce different scores than full-history scoring. Future work could test on privacy-safe real logs, calibrate alert thresholds, and persist analyst feedback in an approved store.
